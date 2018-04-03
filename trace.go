@@ -118,7 +118,7 @@ func (n *TraceNode) stringify(ctx *stringifyContext) string {
 	lines = append(lines, fmt.Sprintf("- %s", n.FullPath))
 
 	for _, ui := range n.UnresolvedImports {
-		lines = append(lines, fmt.Sprintf("- MISSING %s", ui))
+		lines = append(lines, fmt.Sprintf("  - MISSING %s", ui))
 	}
 	for _, c := range n.Children {
 		if _, ok := ctx.donePaths[c.FullPath]; ok {
