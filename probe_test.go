@@ -1,6 +1,7 @@
 package elefant_test
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/itchio/elefant"
@@ -35,4 +36,24 @@ func Test_Hello64(t *testing.T) {
 	res, err := elefant.Probe(f, nil)
 	assert.NoError(t, err)
 	assert.EqualValues(t, elefant.ArchAmd64, res.Arch)
+}
+
+func Test_Trace(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+
+	fullpath := "./testdata/notify-send"
+	f, err := eos.Open(fullpath)
+	assert.NoError(t, err)
+	defer f.Close()
+
+	res, err := elefant.Probe(f, nil)
+	assert.NoError(t, err)
+	assert.EqualValues(t, elefant.ArchAmd64, res.Arch)
+
+	root, err := elefant.Trace(res, fullpath)
+	assert.NoError(t, err)
+
+	t.Logf("%s", root)
 }
