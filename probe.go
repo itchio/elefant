@@ -31,7 +31,10 @@ type ProbeParams struct {
 
 // Probe retrieves information about an ELF file
 func Probe(file eos.File, params *ProbeParams) (*ElfInfo, error) {
-	consumer := params.Consumer
+	var consumer *state.Consumer
+	if params != nil {
+		consumer = params.Consumer
+	}
 
 	ef, err := elf.NewFile(file)
 	if err != nil {
