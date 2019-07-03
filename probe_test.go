@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/itchio/elefant"
-	"github.com/itchio/wharf/eos"
+	"github.com/itchio/httpkit/eos"
 	"github.com/stretchr/testify/assert"
 )
 

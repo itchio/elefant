@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/itchio/wharf/eos"
+	"github.com/itchio/httpkit/eos"
 	"github.com/pkg/errors"
 )
 
