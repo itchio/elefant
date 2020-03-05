@@ -9,12 +9,16 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func params() elefant.ProbeParams {
+	return elefant.ProbeParams{}
+}
+
 func Test_NotElfFile(t *testing.T) {
 	f, err := eos.Open("./testdata/hello.c")
 	assert.NoError(t, err)
 	defer f.Close()
 
-	_, err = elefant.Probe(f, nil)
+	_, err = elefant.Probe(f, params())
 	assert.Error(t, err)
 }
 
@@ -23,7 +27,7 @@ func Test_Hello32(t *testing.T) {
 	assert.NoError(t, err)
 	defer f.Close()
 
-	res, err := elefant.Probe(f, nil)
+	res, err := elefant.Probe(f, params())
 	assert.NoError(t, err)
 	assert.EqualValues(t, elefant.Arch386, res.Arch)
 }
@@ -33,7 +37,7 @@ func Test_Hello64(t *testing.T) {
 	assert.NoError(t, err)
 	defer f.Close()
 
-	res, err := elefant.Probe(f, nil)
+	res, err := elefant.Probe(f, params())
 	assert.NoError(t, err)
 	assert.EqualValues(t, elefant.ArchAmd64, res.Arch)
 }
@@ -48,7 +52,7 @@ func Test_Trace(t *testing.T) {
 	assert.NoError(t, err)
 	defer f.Close()
 
-	res, err := elefant.Probe(f, nil)
+	res, err := elefant.Probe(f, params())
 	assert.NoError(t, err)
 	assert.EqualValues(t, elefant.ArchAmd64, res.Arch)
 

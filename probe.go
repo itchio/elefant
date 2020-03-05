@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/itchio/elefant/version"
-	"github.com/itchio/httpkit/eos"
 	"github.com/itchio/headway/state"
+	"github.com/itchio/httpkit/eos"
 	"github.com/pkg/errors"
 )
 
@@ -30,11 +30,8 @@ type ProbeParams struct {
 }
 
 // Probe retrieves information about an ELF file
-func Probe(file eos.File, params *ProbeParams) (*ElfInfo, error) {
-	var consumer *state.Consumer
-	if params != nil {
-		consumer = params.Consumer
-	}
+func Probe(file eos.File, params ProbeParams) (*ElfInfo, error) {
+	consumer := params.Consumer
 
 	ef, err := elf.NewFile(file)
 	if err != nil {

@@ -79,7 +79,7 @@ func (n *TraceNode) trace(cache *Cache, searchPaths *SearchPaths) error {
 					}
 					defer f.Close()
 
-					ei, err := Probe(f, nil)
+					ei, err := Probe(f, ProbeParams{})
 					if err != nil {
 						return errors.WithStack(err)
 					}
