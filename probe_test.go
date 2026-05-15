@@ -56,7 +56,7 @@ func Test_Trace(t *testing.T) {
 	assert.NoError(t, err)
 	assert.EqualValues(t, elefant.ArchAmd64, res.Arch)
 
-	root, err := elefant.Trace(res, fullpath)
+	root, err := elefant.Trace(res, fullpath, elefant.TraceParams{})
 	assert.NoError(t, err)
 
 	t.Logf("%s", root)

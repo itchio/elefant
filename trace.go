@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"debug/elf"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/itchio/headway/state"
 	"github.com/itchio/httpkit/eos"
 )
 
@@ -22,15 +25,19 @@ type TraceNode struct {
 	UnresolvedImports []string
 }
 
-type Cache struct {
-	Nodes map[string]*TraceNode
+type TraceParams struct {
+	Consumer *state.Consumer
 }
 
-func (c *Cache) add(tn *TraceNode) {
-	c.Nodes[tn.FullPath] = tn
+type traceCache struct {
+	nodes map[string]*TraceNode
 }
 
-func Trace(info *ElfInfo, fullPath string) (*TraceNode, error) {
+func (c *traceCache) add(tn *TraceNode) {
+	c.nodes[tn.FullPath] = tn
+}
+
+func Trace(info *ElfInfo, fullPath string, params TraceParams) (*TraceNode, error) {
 	fullPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving absolute path: %w", err)
@@ -47,19 +54,19 @@ func Trace(info *ElfInfo, fullPath string) (*TraceNode, error) {
 		return nil, fmt.Errorf("loading search paths: %w", err)
 	}
 
-	cache := &Cache{
-		Nodes: make(map[string]*TraceNode),
+	cache := &traceCache{
+		nodes: make(map[string]*TraceNode),
 	}
 	cache.add(root)
 
-	if err := root.trace(cache, searchPaths); err != nil {
+	if err := root.trace(cache, searchPaths, params); err != nil {
 		return nil, fmt.Errorf("tracing %s: %w", fullPath, err)
 	}
 
 	return root, nil
 }
 
-func (n *TraceNode) trace(cache *Cache, searchPaths *SearchPaths) error {
+func (n *TraceNode) trace(cache *traceCache, searchPaths *searchPaths, params TraceParams) error {
 	for _, imp := range n.Info.Imports {
 		importPath := searchPaths.lookup(imp, n.Info.Arch)
 		if importPath == "" {
@@ -67,26 +74,26 @@ func (n *TraceNode) trace(cache *Cache, searchPaths *SearchPaths) error {
 			continue
 		}
 
-		if cn, ok := cache.Nodes[importPath]; ok {
+		if cn, ok := cache.nodes[importPath]; ok {
 			n.Children = append(n.Children, cn)
 			continue
 		}
 
-		if err := n.traceImport(cache, searchPaths, imp, importPath); err != nil {
+		if err := n.traceImport(cache, searchPaths, imp, importPath, params); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (n *TraceNode) traceImport(cache *Cache, searchPaths *SearchPaths, name, importPath string) error {
+func (n *TraceNode) traceImport(cache *traceCache, searchPaths *searchPaths, name, importPath string, params TraceParams) error {
 	f, err := eos.Open(importPath)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", importPath, err)
 	}
 	defer f.Close()
 
-	ei, err := Probe(f, ProbeParams{})
+	ei, err := Probe(f, ProbeParams{Consumer: params.Consumer})
 	if err != nil {
 		return fmt.Errorf("probing %s: %w", importPath, err)
 	}
@@ -99,7 +106,7 @@ func (n *TraceNode) traceImport(cache *Cache, searchPaths *SearchPaths, name, im
 	cache.add(cn)
 	n.Children = append(n.Children, cn)
 
-	return cn.trace(cache, searchPaths)
+	return cn.trace(cache, searchPaths, params)
 }
 
 type stringifyContext struct {
@@ -121,6 +128,7 @@ func (n *TraceNode) stringify(ctx *stringifyContext) string {
 	}
 	for _, c := range n.Children {
 		if ctx.donePaths[c.FullPath] {
+			lines = append(lines, fmt.Sprintf("  - %s (see above)", c.FullPath))
 			continue
 		}
 		ctx.donePaths[c.FullPath] = true
@@ -132,13 +140,13 @@ func (n *TraceNode) stringify(ctx *stringifyContext) string {
 	return strings.Join(lines, "\n")
 }
 
-type SearchPaths struct {
-	Paths []string
+type searchPaths struct {
+	paths []string
 
 	archCache map[string]Arch
 }
 
-func (sp *SearchPaths) getArch(fullpath string) Arch {
+func (sp *searchPaths) getArch(fullpath string) Arch {
 	if sp.archCache == nil {
 		sp.archCache = make(map[string]Arch)
 	}
@@ -156,6 +164,8 @@ func (sp *SearchPaths) getArch(fullpath string) Arch {
 			arch = Arch386
 		case elf.EM_X86_64:
 			arch = ArchAmd64
+		case elf.EM_AARCH64:
+			arch = ArchArm64
 		}
 	}
 
@@ -163,8 +173,8 @@ func (sp *SearchPaths) getArch(fullpath string) Arch {
 	return arch
 }
 
-func (sp *SearchPaths) lookup(name string, arch Arch) string {
-	for _, dir := range sp.Paths {
+func (sp *searchPaths) lookup(name string, arch Arch) string {
+	for _, dir := range sp.paths {
 		candidatePath := filepath.Join(dir, name)
 		if sp.getArch(candidatePath) == arch {
 			return candidatePath
@@ -173,12 +183,12 @@ func (sp *SearchPaths) lookup(name string, arch Arch) string {
 	return ""
 }
 
-func (sp *SearchPaths) addPath(path string) {
-	sp.Paths = append(sp.Paths, path)
+func (sp *searchPaths) addPath(path string) {
+	sp.paths = append(sp.paths, path)
 }
 
-func getSearchPaths() (*SearchPaths, error) {
-	sp := &SearchPaths{}
+func getSearchPaths() (*searchPaths, error) {
+	sp := &searchPaths{}
 	sp.addPath("/usr/lib") // this one is standard
 
 	if err := sp.parseConfig("/etc/ld.so.conf"); err != nil {
@@ -191,9 +201,12 @@ var ldSoConfCommentRe = regexp.MustCompile("#.*$")
 
 // cf. https://www.daemon-systems.org/man/ld.so.conf.5.html
 // we do not support hardware-dependent directives
-func (sp *SearchPaths) parseConfig(configPath string) error {
+func (sp *searchPaths) parseConfig(configPath string) error {
 	contents, err := os.ReadFile(configPath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("reading %s: %w", configPath, err)
 	}
 
@@ -221,6 +234,9 @@ func (sp *SearchPaths) parseConfig(configPath string) error {
 		case strings.HasPrefix(line, "/"):
 			sp.addPath(line)
 		}
+	}
+	if err := s.Err(); err != nil {
+		return fmt.Errorf("scanning %s: %w", configPath, err)
 	}
 
 	return nil

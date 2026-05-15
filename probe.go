@@ -15,6 +15,7 @@ type Arch string
 const (
 	Arch386     Arch = "386"
 	ArchAmd64   Arch = "amd64"
+	ArchArm64   Arch = "arm64"
 	ArchUnknown Arch = ""
 )
 
@@ -45,6 +46,8 @@ func Probe(file eos.File, params ProbeParams) (*ElfInfo, error) {
 		res.Arch = Arch386
 	case elf.EM_X86_64:
 		res.Arch = ArchAmd64
+	case elf.EM_AARCH64:
+		res.Arch = ArchArm64
 	}
 
 	libs, err := ef.ImportedLibraries()
