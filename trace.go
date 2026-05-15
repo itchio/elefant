@@ -5,13 +5,12 @@ import (
 	"bytes"
 	"debug/elf"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/itchio/httpkit/eos"
-	"github.com/pkg/errors"
 )
 
 type TraceNode struct {
@@ -34,7 +33,7 @@ func (c *Cache) add(tn *TraceNode) {
 func Trace(info *ElfInfo, fullPath string) (*TraceNode, error) {
 	fullPath, err := filepath.Abs(fullPath)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, fmt.Errorf("resolving absolute path: %w", err)
 	}
 
 	root := &TraceNode{
@@ -45,7 +44,7 @@ func Trace(info *ElfInfo, fullPath string) (*TraceNode, error) {
 
 	searchPaths, err := getSearchPaths()
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, fmt.Errorf("loading search paths: %w", err)
 	}
 
 	cache := &Cache{
@@ -53,9 +52,8 @@ func Trace(info *ElfInfo, fullPath string) (*TraceNode, error) {
 	}
 	cache.add(root)
 
-	err = root.trace(cache, searchPaths)
-	if err != nil {
-		return nil, errors.WithStack(err)
+	if err := root.trace(cache, searchPaths); err != nil {
+		return nil, fmt.Errorf("tracing %s: %w", fullPath, err)
 	}
 
 	return root, nil
@@ -63,44 +61,45 @@ func Trace(info *ElfInfo, fullPath string) (*TraceNode, error) {
 
 func (n *TraceNode) trace(cache *Cache, searchPaths *SearchPaths) error {
 	for _, imp := range n.Info.Imports {
-
 		importPath := searchPaths.lookup(imp, n.Info.Arch)
 		if importPath == "" {
 			n.UnresolvedImports = append(n.UnresolvedImports, imp)
-		} else {
-			if cn, ok := cache.Nodes[importPath]; ok {
-				// cool!
-				n.Children = append(n.Children, cn)
-			} else {
-				err := func() error {
-					f, err := eos.Open(importPath)
-					if err != nil {
-						return errors.WithStack(err)
-					}
-					defer f.Close()
+			continue
+		}
 
-					ei, err := Probe(f, ProbeParams{})
-					if err != nil {
-						return errors.WithStack(err)
-					}
+		if cn, ok := cache.Nodes[importPath]; ok {
+			n.Children = append(n.Children, cn)
+			continue
+		}
 
-					cn := &TraceNode{
-						Name:     imp,
-						FullPath: importPath,
-						Info:     ei,
-					}
-					cache.add(cn)
-					n.Children = append(n.Children, cn)
-
-					return cn.trace(cache, searchPaths)
-				}()
-				if err != nil {
-					return errors.WithStack(err)
-				}
-			}
+		if err := n.traceImport(cache, searchPaths, imp, importPath); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (n *TraceNode) traceImport(cache *Cache, searchPaths *SearchPaths, name, importPath string) error {
+	f, err := eos.Open(importPath)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", importPath, err)
+	}
+	defer f.Close()
+
+	ei, err := Probe(f, ProbeParams{})
+	if err != nil {
+		return fmt.Errorf("probing %s: %w", importPath, err)
+	}
+
+	cn := &TraceNode{
+		Name:     name,
+		FullPath: importPath,
+		Info:     ei,
+	}
+	cache.add(cn)
+	n.Children = append(n.Children, cn)
+
+	return cn.trace(cache, searchPaths)
 }
 
 type stringifyContext struct {
@@ -121,12 +120,12 @@ func (n *TraceNode) stringify(ctx *stringifyContext) string {
 		lines = append(lines, fmt.Sprintf("  - MISSING %s", ui))
 	}
 	for _, c := range n.Children {
-		if _, ok := ctx.donePaths[c.FullPath]; ok {
+		if ctx.donePaths[c.FullPath] {
 			continue
 		}
 		ctx.donePaths[c.FullPath] = true
 
-		for _, l := range strings.Split(c.stringify(ctx), "\n") {
+		for l := range strings.SplitSeq(c.stringify(ctx), "\n") {
 			lines = append(lines, fmt.Sprintf("  %s", l))
 		}
 	}
@@ -148,7 +147,7 @@ func (sp *SearchPaths) getArch(fullpath string) Arch {
 		return arch
 	}
 
-	var arch = ArchUnknown
+	arch := ArchUnknown
 	ef, err := elf.Open(fullpath)
 	if err == nil {
 		defer ef.Close()
@@ -167,8 +166,7 @@ func (sp *SearchPaths) getArch(fullpath string) Arch {
 func (sp *SearchPaths) lookup(name string, arch Arch) string {
 	for _, dir := range sp.Paths {
 		candidatePath := filepath.Join(dir, name)
-		candidateArch := sp.getArch(candidatePath)
-		if candidateArch == arch {
+		if sp.getArch(candidatePath) == arch {
 			return candidatePath
 		}
 	}
@@ -183,9 +181,8 @@ func getSearchPaths() (*SearchPaths, error) {
 	sp := &SearchPaths{}
 	sp.addPath("/usr/lib") // this one is standard
 
-	err := sp.parseConfig("/etc/ld.so.conf")
-	if err != nil {
-		return nil, errors.WithStack(err)
+	if err := sp.parseConfig("/etc/ld.so.conf"); err != nil {
+		return nil, err
 	}
 	return sp, nil
 }
@@ -195,33 +192,30 @@ var ldSoConfCommentRe = regexp.MustCompile("#.*$")
 // cf. https://www.daemon-systems.org/man/ld.so.conf.5.html
 // we do not support hardware-dependent directives
 func (sp *SearchPaths) parseConfig(configPath string) error {
-	contents, err := ioutil.ReadFile(configPath)
+	contents, err := os.ReadFile(configPath)
 	if err != nil {
-		return errors.WithStack(err)
+		return fmt.Errorf("reading %s: %w", configPath, err)
 	}
 
 	s := bufio.NewScanner(bytes.NewReader(contents))
 	for s.Scan() {
-		lineWithComments := s.Text()
-		line := ldSoConfCommentRe.ReplaceAllLiteralString(lineWithComments, "")
+		line := ldSoConfCommentRe.ReplaceAllLiteralString(s.Text(), "")
 		line = strings.TrimSpace(line)
 
 		switch {
 		case len(line) == 0:
-			// ignore empty / comment-only lines
 			continue
 		case strings.HasPrefix(line, "include "):
 			includePath := strings.TrimSpace(strings.TrimPrefix(line, "include "))
 
 			files, err := filepath.Glob(includePath)
 			if err != nil {
-				return errors.WithStack(err)
+				return fmt.Errorf("glob %s: %w", includePath, err)
 			}
 
 			for _, f := range files {
-				err = sp.parseConfig(f)
-				if err != nil {
-					return errors.WithStack(err)
+				if err := sp.parseConfig(f); err != nil {
+					return err
 				}
 			}
 		case strings.HasPrefix(line, "/"):

@@ -2,12 +2,12 @@ package elefant
 
 import (
 	"debug/elf"
+	"fmt"
 	"strings"
 
 	"github.com/itchio/elefant/version"
 	"github.com/itchio/headway/state"
 	"github.com/itchio/httpkit/eos"
-	"github.com/pkg/errors"
 )
 
 type Arch string
@@ -35,7 +35,7 @@ func Probe(file eos.File, params ProbeParams) (*ElfInfo, error) {
 
 	ef, err := elf.NewFile(file)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, fmt.Errorf("opening elf file: %w", err)
 	}
 
 	res := &ElfInfo{}
@@ -55,17 +55,18 @@ func Probe(file eos.File, params ProbeParams) (*ElfInfo, error) {
 
 	syms, err := ef.ImportedSymbols()
 	if err != nil {
-		consumer.Warnf("Could not get ELF imported libraries: %v", err)
+		consumer.Warnf("Could not get ELF imported symbols: %v", err)
 	}
 
 	for _, sym := range syms {
 		ver := sym.Version
-		if strings.HasPrefix(ver, "GLIBC_") {
+		switch {
+		case strings.HasPrefix(ver, "GLIBC_"):
 			ver := strings.TrimPrefix(ver, "GLIBC_")
 			if version.GTOrEq(ver, res.GlibcVersion) {
 				res.GlibcVersion = ver
 			}
-		} else if strings.HasPrefix(ver, "CXXABI_") {
+		case strings.HasPrefix(ver, "CXXABI_"):
 			ver := strings.TrimPrefix(ver, "CXXABI_")
 			if version.GTOrEq(ver, res.CxxAbiVersion) {
 				res.CxxAbiVersion = ver
